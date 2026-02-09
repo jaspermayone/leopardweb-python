@@ -153,4 +153,3 @@ This script is based on the Ruby implementation from the WIT Calendar Backend pr
 ## License
 
 This script is provided as-is for educational and research purposes.
-# leopardweb-python
