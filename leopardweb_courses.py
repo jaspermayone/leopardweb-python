@@ -22,6 +22,7 @@ Output:
 
 import argparse
 import csv
+import html
 import json
 import sys
 import time
@@ -35,6 +36,13 @@ from colorama import Fore, Style, init
 
 # Initialize colorama for cross-platform colored output
 init(autoreset=True)
+
+
+def decode_html(text: str) -> str:
+    """Decode HTML entities in text (e.g., &amp; -> &)."""
+    if not text or not isinstance(text, str):
+        return text
+    return html.unescape(text)
 
 
 class LeopardWebClient:
@@ -301,7 +309,7 @@ def flatten_course_data(course: Dict) -> Dict:
         for faculty in course["faculty"]:
             display_name = faculty.get("displayName", "")
             if display_name:
-                faculty_names.append(display_name)
+                faculty_names.append(decode_html(display_name))
 
     # Extract meeting times - use detailed data if available
     meeting_days = []
@@ -364,19 +372,19 @@ def flatten_course_data(course: Dict) -> Dict:
                 meeting_locations.append(f"{building} {room}".strip())
 
     return {
-        "CRN": course.get("courseReferenceNumber", ""),
-        "Subject": course.get("subject", ""),
-        "Course Number": course.get("courseNumber", ""),
-        "Section": course.get("sequenceNumber", ""),
-        "Title": course.get("courseTitle", ""),
+        "CRN": decode_html(course.get("courseReferenceNumber", "")),
+        "Subject": decode_html(course.get("subject", "")),
+        "Course Number": decode_html(course.get("courseNumber", "")),
+        "Section": decode_html(course.get("sequenceNumber", "")),
+        "Title": decode_html(course.get("courseTitle", "")),
         "Credit Hours": course.get("creditHours", ""),
-        "Schedule Type": course.get("scheduleTypeDescription", ""),
-        "Instructional Method": course.get("instructionalMethod", ""),
+        "Schedule Type": decode_html(course.get("scheduleTypeDescription", "")),
+        "Instructional Method": decode_html(course.get("instructionalMethod", "")),
         "Faculty": ", ".join(faculty_names) if faculty_names else "",
         "Meeting Days": ", ".join(meeting_days) if meeting_days else "",
         "Meeting Times": ", ".join(meeting_times) if meeting_times else "",
         "Location": ", ".join(meeting_locations) if meeting_locations else "",
-        "Campus": course.get("campusDescription", ""),
+        "Campus": decode_html(course.get("campusDescription", "")),
         "Enrollment Current": course.get("enrollment", ""),
         "Enrollment Max": course.get("maximumEnrollment", ""),
         "Seats Available": course.get("seatsAvailable", ""),
@@ -611,7 +619,7 @@ Examples:
 
     # Fetch courses mode
     if not args.term:
-        print("Error: term code is required (or use --list-terms)", file=sys.stderr)
+        print(f"{Fore.RED}Error: term code is required (or use --list-terms)", file=sys.stderr)
         parser.print_help()
         sys.exit(1)
 

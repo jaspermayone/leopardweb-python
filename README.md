@@ -8,6 +8,7 @@ A Python script to fetch all courses for a given semester from WIT's LeopardWeb 
 - `requests` library
 - `openpyxl` library (for Excel output)
 - `tqdm` library (for progress bars)
+- `colorama` library (for colored output)
 
 ## Installation
 
@@ -18,7 +19,7 @@ pip install -r requirements.txt
 
 Or install libraries directly:
 ```bash
-pip install requests openpyxl tqdm
+pip install requests openpyxl tqdm colorama
 ```
 
 ## Usage
