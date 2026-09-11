@@ -1,13 +1,32 @@
-# LeopardWeb Course Catalog Fetcher
+# WIT Course Catalog Fetcher
 
-A Python script to fetch all courses for a given semester from WIT's LeopardWeb system.
+A Python script to fetch the course schedule for a WIT semester and save it as
+Excel, CSV, or JSON.
+
+The script reads the public schedule feed at
+[calendar.witcc.dev](https://calendar.witcc.dev). It does not scrape
+LeopardWeb.
+
+## Why the feed and not LeopardWeb
+
+Earlier versions of this script scraped LeopardWeb directly. The WIT Calendar
+system already does that scrape on a schedule, cleans the result, and joins it
+to room and faculty records. Reading its feed gives you:
+
+- **Speed.** One HTTP request, not several hundred. A full term takes about a
+  second.
+- **Clean rooms.** Building abbreviations and room numbers come as separate
+  columns, plus one joined `Location` label. LeopardWeb gives you one text blob.
+- **No session handling.** There is no JSESSIONID, no pagination, and no rate
+  limit to respect.
+- **No load on LeopardWeb.** Many people running the old script hit the
+  registrar's server many times each.
 
 ## Requirements
 
 - Python 3.7 or higher
 - `requests` library
 - `openpyxl` library (for Excel output)
-- `tqdm` library (for progress bars)
 - `colorama` library (for colored output)
 
 ## Installation
@@ -19,14 +38,14 @@ pip install -r requirements.txt
 
 Or install libraries directly:
 ```bash
-pip install requests openpyxl tqdm colorama
+pip install requests openpyxl colorama
 ```
 
 ## Usage
 
 ### List Available Terms
 
-To see all available academic terms:
+To see the terms that have schedule data:
 ```bash
 python leopardweb_courses.py --list-terms
 ```
@@ -35,30 +54,27 @@ Example output:
 ```
 Available Terms:
 ------------------------------------------------------------
-202610     Fall 2025
-202510     Spring 2025
-202410     Fall 2024
+202610     Fall 2025          2061 meeting times
+202620     Spring 2026        1898 meeting times
+202710     Fall 2026          2120 meeting times
 ```
+
+Only terms with schedule data appear here. A term that the calendar has not
+ingested yet is not listed.
 
 ### Fetch Courses for a Term
 
-To fetch all courses for a specific term (defaults to Excel format):
+To fetch the schedule for a term (defaults to Excel format):
 ```bash
 python leopardweb_courses.py <term_code>
 ```
 
 Example:
 ```bash
-python leopardweb_courses.py 202510
+python leopardweb_courses.py 202710
 ```
 
-This will:
-1. Initialize a session with LeopardWeb
-2. Fetch all courses for the specified term
-3. Fetch detailed meeting times and faculty information for each course (with progress bar)
-4. Save the results to `courses_202510.xlsx`
-
-**Note:** The script fetches detailed information for every course by default, which may take a few minutes for large course catalogs (e.g., 500+ courses). A progress bar shows real-time status.
+This saves the result to `courses_202710.xlsx`.
 
 ### Output Formats
 
@@ -66,140 +82,148 @@ Choose between Excel (default), CSV, or JSON:
 
 ```bash
 # Excel format (default) - formatted spreadsheet
-python leopardweb_courses.py 202510
+python leopardweb_courses.py 202710
 
 # CSV format - plain text, comma-separated
-python leopardweb_courses.py 202510 --format csv
+python leopardweb_courses.py 202710 --format csv
 
-# JSON format - raw API data with full details
-python leopardweb_courses.py 202510 --format json
+# JSON format
+python leopardweb_courses.py 202710 --format json
 ```
 
 ### Custom Output File
 
 To specify a custom output filename:
 ```bash
-python leopardweb_courses.py 202510 -o spring_2025_courses.xlsx
-python leopardweb_courses.py 202510 --format csv -o courses.csv
-```
-
-### Quick Mode (Skip Detailed Fetch)
-
-For faster execution without detailed meeting times:
-```bash
-python leopardweb_courses.py 202510 --quick
+python leopardweb_courses.py 202710 -o fall_2026_courses.xlsx
+python leopardweb_courses.py 202710 --format csv -o courses.csv
 ```
 
 ### Quiet Mode
 
 To suppress progress messages:
 ```bash
-python leopardweb_courses.py 202510 -q
+python leopardweb_courses.py 202710 -q
+```
+
+### Custom Server
+
+To read from a different calendar server (for example, a local development
+instance):
+```bash
+python leopardweb_courses.py 202710 --base-url http://localhost:3000
 ```
 
 ## Output Format Details
 
-### Excel/CSV Output
-The Excel and CSV formats include the following columns:
-- CRN (Course Reference Number)
-- Subject (e.g., CS, MATH)
-- Course Number
-- Section
-- Title
-- Credit Hours
-- Schedule Type (Lecture, Lab, etc.)
-- Instructional Method
-- Faculty (professor names)
-- Meeting Days (e.g., MWF, TR)
-- Meeting Times (e.g., 09:00-09:50)
-- Location (Building and room)
-- Campus
-- Enrollment Current/Max/Available
-- Waitlist Current/Max
+### Row grain
+
+**One row is one meeting time in one room.** A course that meets Monday,
+Wednesday, and Friday has three rows. A course booked into two rooms at the
+same hour has one row per room. Group by CRN to get one row per section.
+
+This is different from the old scraper, which put all meeting days in one cell.
+The new shape is easier to filter and pivot: you can ask "what is in Annex 305
+on Tuesday at 10:00" with a filter instead of string parsing.
+
+### Columns
+
+| Column | Notes |
+| --- | --- |
+| Term | For example, `Fall 2026` |
+| CRN | Course Reference Number |
+| Subject | For example, `CS`, `MATH` |
+| Course Number | |
+| Section | |
+| Title | |
+| Credit Hours | |
+| Schedule Type | `lecture`, `lab`, and so on |
+| Status | `active` or `cancelled` |
+| Faculty | Team-taught sections list every teacher, comma separated |
+| Day | `monday` through `sunday` |
+| Begin Time | 24-hour `HH:MM` |
+| End Time | 24-hour `HH:MM` |
+| Meeting Type | The meeting's own type, which can differ from the section's |
+| Building | Abbreviation, for example `ANX` |
+| Building Name | Full name, for example `Annex` |
+| Room | Room number, padded to 3 digits when numeric |
+| Location | Building and room joined, for example `ANX 305` |
+| Enrollment Max | Section seat cap |
+| Enrollment Current | Seats taken |
+| Seats Available | Seats left |
 
 Excel files include:
 - Formatted header row (blue background, white text)
 - Frozen header row for easy scrolling
+- An auto-filter on every column
 - Auto-adjusted column widths
-- Text wrapping for long content
+- Numeric columns kept numeric, so sums and sorts work
 
-### JSON Output
-The JSON format preserves the complete raw API response:
+### Columns that are gone
 
-```json
-{
-  "term": "202510",
-  "total_count": 450,
-  "courses": [
-    {
-      "courseReferenceNumber": "12345",
-      "subject": "CS",
-      "courseNumber": "101",
-      "courseTitle": "Introduction to Computer Science",
-      "creditHours": 3,
-      "faculty": [...],
-      "meetingsFaculty": [...],
-      ...
-    }
-  ]
-}
-```
+The old scraper produced two columns the feed does not have:
+
+- **Instructional Method** — the calendar does not store this yet.
+- **Campus** — the calendar does not store this yet.
+- **Waitlist Current / Waitlist Max** — the calendar does not expose these in
+  the public feed.
 
 ## How It Works
 
-The script replicates the functionality of the Rails backend service:
+1. `GET /reports/terms` returns the terms that have schedule data.
+2. `GET /reports/meeting_times?term_uid=<term>` returns every meeting time for
+   that term as CSV.
+3. The script renames the columns and writes your chosen format.
 
-1. **Session Initialization**: Creates a JSESSIONID cookie by posting term selection to LeopardWeb
-2. **Pagination**: Fetches courses in batches (500 per page) to handle large course catalogs
-3. **Data Export**: Saves course data in your chosen format
+Both endpoints are public, read-only, and cached for one hour. They carry
+course schedule data only — never user data.
+
+You can point any tool at them, not just this script. Power BI and Excel can
+read them directly with a Web connector.
 
 ## Troubleshooting
 
 ### Import Error
 If you see `ModuleNotFoundError`:
 ```bash
-pip install requests openpyxl
+pip install -r requirements.txt
 ```
 
 ### Connection Error
 If the script fails to connect:
-- Check your internet connection
-- Verify that https://selfservice.wit.edu is accessible
-- The LeopardWeb system may be temporarily down
+- Check your internet connection.
+- Check that https://calendar.witcc.dev is up.
 
-### No Courses Found
-- Verify the term code is correct using `--list-terms`
-- Some terms may not have courses published yet
+### No Schedule Data For Term
+- Check the term code with `--list-terms`.
+- The calendar lists only the terms it has ingested. If a term is missing, the
+  calendar has not imported it yet.
 
 ## Examples
 
 ```bash
-# List all available terms
+# List the terms that have data
 python leopardweb_courses.py --list-terms
 
-# Fetch Spring 2025 courses as Excel (default)
-python leopardweb_courses.py 202510
+# Fetch Fall 2026 as Excel (default)
+python leopardweb_courses.py 202710
 
 # Fetch as CSV
-python leopardweb_courses.py 202510 --format csv
+python leopardweb_courses.py 202710 --format csv
 
-# Fetch Fall 2025 courses with custom filename
-python leopardweb_courses.py 202610 -o fall_2025.xlsx
+# Fetch with a custom filename
+python leopardweb_courses.py 202710 -o fall_2026.xlsx
 
 # Quiet mode (no progress messages)
-python leopardweb_courses.py 202510 -q --format csv
-
-# Quick mode (skip detailed fetch for faster execution)
-python leopardweb_courses.py 202510 --quick
+python leopardweb_courses.py 202710 -q --format csv
 ```
 
 ## Technical Details
 
-This script is based on the Ruby implementation from the [WIT Calendar Backend](https://github.com/WITCodingClub/calendar-backend) project:
-- Source: [`app/services/leopard_web_service.rb`](https://github.com/WITCodingClub/calendar-backend/blob/main/app/services/leopard_web_service.rb)
-- Uses the same API endpoints and authentication flow
-- Maintains session cookies for authenticated requests
-- Handles pagination automatically
+The upstream scrape lives in the [WIT Calendar
+Backend](https://github.com/WITCodingClub/calendar-backend):
+- Scraper: `app/services/leopard_web_service.rb`
+- Feed: `app/controllers/reports_controller.rb`
 
 ## Author & License
 
