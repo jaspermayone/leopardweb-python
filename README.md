@@ -106,6 +106,13 @@ To suppress progress messages:
 python leopardweb_courses.py 202710 -q
 ```
 
+### One Row Per Meeting Day
+
+To get one row per meeting day in one room, instead of one row per section:
+```bash
+python leopardweb_courses.py 202710 --by-meeting
+```
+
 ### Custom Server
 
 To read from a different calendar server (for example, a local development
@@ -118,13 +125,51 @@ python leopardweb_courses.py 202710 --base-url http://localhost:3000
 
 ### Row grain
 
-**One row is one meeting time in one room.** A course that meets Monday,
-Wednesday, and Friday has three rows. A course booked into two rooms at the
-same hour has one row per room. Group by CRN to get one row per section.
+**One row is one section.** A section appears once, the way it appears on a
+schedule. Meeting days are collapsed into Banner day codes, so a Tuesday and
+Thursday lecture reads as `TR`.
 
-This is different from the old scraper, which put all meeting days in one cell.
-The new shape is easier to filter and pivot: you can ask "what is in Annex 305
-on Tuesday at 10:00" with a filter instead of string parsing.
+```
+CRN    Subject  Course Number  Section  Meeting Days  Meeting Times  Location
+16036  MATH     2300           3        TR            10:00-11:45    WENTW 214
+17309  MATH     1525           1A       MW            08:00-09:15    WENTW 206
+```
+
+Day codes start on Monday. `R` is Thursday and `U` is Sunday, because `T` and
+`S` are already taken.
+
+| Code | M | T | W | R | F | S | U |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Day | Mon | Tue | Wed | Thu | Fri | Sat | Sun |
+
+Most sections meet on one pattern. A section with more than one pattern, such
+as a lecture that also has a Friday lab in another room, lists one part per
+pattern separated by `; `. The parts line up across every meeting column:
+
+```
+Meeting Days  Meeting Times              Location
+MW; F         09:00-10:15; 13:00-14:50   ANX 305; DOB 005
+```
+
+### One row per meeting day
+
+Pass `--by-meeting` for the other shape: **one row is one meeting time in one
+room.** A course that meets Monday, Wednesday, and Friday has three rows. A
+course booked into two rooms at the same hour has one row per room.
+
+```bash
+python leopardweb_courses.py 202710 --by-meeting
+```
+
+Use it for room and hour questions, such as "what is in Annex 305 on Tuesday
+at 10:00". You can filter instead of parsing a day string.
+
+Use the default for a course list. In the `--by-meeting` shape a reader
+scanning for courses sees each one more than once, and reads the extra rows as
+duplicates.
+
+The `Meeting Count` column on a section row says how many `--by-meeting` rows
+collapsed into it, so the two shapes reconcile.
 
 ### Columns
 
@@ -140,6 +185,20 @@ on Tuesday at 10:00" with a filter instead of string parsing.
 | Schedule Type | `lecture`, `lab`, and so on |
 | Status | `active` or `cancelled` |
 | Faculty | Team-taught sections list every teacher, comma separated |
+| Meeting Days | Banner day codes, for example `TR` |
+| Meeting Times | 24-hour `HH:MM-HH:MM` |
+| Meeting Type | The meeting's own type, which can differ from the section's |
+| Location | Building and room joined, for example `ANX 305` |
+| Room Capacity | Largest room the section is scheduled into. Blank when unknown |
+| Enrollment Max | Section seat cap |
+| Enrollment Current | Seats taken |
+| Seats Available | Seats left |
+| Meeting Count | How many `--by-meeting` rows this section collapses |
+
+With `--by-meeting`, the four meeting columns are replaced by these:
+
+| Column | Notes |
+| --- | --- |
 | Day | `monday` through `sunday` |
 | Begin Time | 24-hour `HH:MM` |
 | End Time | 24-hour `HH:MM` |
@@ -148,9 +207,7 @@ on Tuesday at 10:00" with a filter instead of string parsing.
 | Building Name | Full name, for example `Annex` |
 | Room | Room number, padded to 3 digits when numeric |
 | Location | Building and room joined, for example `ANX 305` |
-| Enrollment Max | Section seat cap |
-| Enrollment Current | Seats taken |
-| Seats Available | Seats left |
+| Room Capacity | Capacity of that room. Blank when unknown |
 
 Excel files include:
 - Formatted header row (blue background, white text)
@@ -171,11 +228,15 @@ The old scraper produced two columns the feed does not have:
 ## How It Works
 
 1. `GET /reports/terms` returns the terms that have schedule data.
-2. `GET /reports/meeting_times?term_uid=<term>` returns every meeting time for
-   that term as CSV.
+2. `GET /reports/sections?term_uid=<term>` returns one row per section for that
+   term as CSV. With `--by-meeting`, `GET /reports/meeting_times?term_uid=<term>`
+   returns one row per meeting time instead.
 3. The script renames the columns and writes your chosen format.
 
-Both endpoints are public, read-only, and cached for one hour. They carry
+The feed does the collapsing, so this script and any other tool reading the
+same report always agree on the shape.
+
+All three endpoints are public, read-only, and cached for one hour. They carry
 course schedule data only — never user data.
 
 You can point any tool at them, not just this script. Power BI and Excel can

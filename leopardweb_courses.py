@@ -15,10 +15,14 @@ Author: Jasper Mayone
 Copyright (c) 2025 Jasper Mayone
 Source: https://github.com/WITCodingClub/calendar-backend
 
+One row is one section. Pass --by-meeting for one row per meeting day in
+one room, which is the shape to use for room and hour questions.
+
 Usage:
     python leopardweb_courses.py <term_code>
     python leopardweb_courses.py 202710              # Fall 2026 (Excel)
     python leopardweb_courses.py 202710 --format csv # CSV output
+    python leopardweb_courses.py 202710 --by-meeting # One row per meeting day
     python leopardweb_courses.py --list-terms        # Show available terms
 
 Output:
@@ -43,8 +47,33 @@ init(autoreset=True)
 
 DEFAULT_BASE_URL = "https://calendar.witcc.dev"
 
-# Feed columns renamed for the spreadsheet. Order here is column order out.
-COLUMN_LABELS = {
+# One row per section. This is the default, and the grain most people expect:
+# a section you take or teach appears once. Order here is column order out.
+SECTION_COLUMN_LABELS = {
+    "term": "Term",
+    "crn": "CRN",
+    "subject": "Subject",
+    "course_number": "Course Number",
+    "section_number": "Section",
+    "title": "Title",
+    "credit_hours": "Credit Hours",
+    "schedule_type": "Schedule Type",
+    "status": "Status",
+    "faculty": "Faculty",
+    "meeting_days": "Meeting Days",
+    "meeting_times": "Meeting Times",
+    "meeting_type": "Meeting Type",
+    "room": "Location",
+    "room_capacity": "Room Capacity",
+    "seats_capacity": "Enrollment Max",
+    "enrollment_current": "Enrollment Current",
+    "seats_available": "Seats Available",
+    "meeting_count": "Meeting Count",
+}
+
+# One row per meeting time in one room, for --by-meeting. Use this grain to
+# ask room and hour questions without reading a day string.
+MEETING_COLUMN_LABELS = {
     "term": "Term",
     "crn": "CRN",
     "subject": "Subject",
@@ -63,10 +92,17 @@ COLUMN_LABELS = {
     "building_name": "Building Name",
     "room_number": "Room",
     "room": "Location",
+    "room_capacity": "Room Capacity",
     "seats_capacity": "Enrollment Max",
     "enrollment_current": "Enrollment Current",
     "seats_available": "Seats Available",
 }
+
+# Columns Excel should hold as numbers, so sorting and summing work.
+NUMERIC_KEYS = frozenset({
+    "crn", "credit_hours", "seats_capacity", "seats_available",
+    "enrollment_current", "room_capacity", "meeting_count",
+})
 
 
 class CalendarFeedError(RuntimeError):
@@ -87,6 +123,16 @@ class CalendarFeedClient:
         try:
             response = self.session.get(url, params=params, timeout=self.timeout)
             response.raise_for_status()
+        except requests.HTTPError as e:
+            # A 404 on a report path means the server predates the report, not
+            # that the term is wrong. Say so, because the two read alike.
+            if e.response is not None and e.response.status_code == 404:
+                raise CalendarFeedError(
+                    f"{self.base_url} has no {path} report. That server is older "
+                    f"than this script. Update the server, or use --by-meeting, "
+                    f"which reads the older /reports/meeting_times report."
+                ) from e
+            raise CalendarFeedError(f"Could not read {url}: {e}") from e
         except requests.RequestException as e:
             raise CalendarFeedError(f"Could not read {url}: {e}") from e
 
@@ -114,9 +160,16 @@ class CalendarFeedClient:
             for row in self._get_csv("/reports/terms")
         ]
 
+    def get_sections(self, term: str) -> List[Dict[str, str]]:
+        """Fetch one row per course section for a term."""
+        return self._term_report("/reports/sections", term)
+
     def get_meeting_times(self, term: str) -> List[Dict[str, str]]:
         """Fetch every scheduled meeting time for a term."""
-        rows = self._get_csv("/reports/meeting_times", params={"term_uid": term})
+        return self._term_report("/reports/meeting_times", term)
+
+    def _term_report(self, path: str, term: str) -> List[Dict[str, str]]:
+        rows = self._get_csv(path, params={"term_uid": term})
         if not rows:
             raise CalendarFeedError(
                 f"No schedule data for term {term}. "
@@ -125,21 +178,25 @@ class CalendarFeedClient:
         return rows
 
 
-def to_output_row(row: Dict[str, str]) -> Dict:
+def to_output_row(row: Dict[str, str], labels: Dict[str, str]) -> Dict:
     """Rename and reorder feed columns for tabular output."""
     out = {}
-    for key, label in COLUMN_LABELS.items():
+    for key, label in labels.items():
         value = row.get(key, "")
-        # Keep numbers numeric so Excel sorts and sums them correctly.
-        if key in ("crn", "credit_hours", "seats_capacity",
-                   "seats_available", "enrollment_current"):
-            out[label] = int(value) if value not in ("", None) else ""
+        # Keep numbers numeric so Excel sorts and sums them correctly. A blank
+        # cell stays blank rather than becoming a wrong 0.
+        if key in NUMERIC_KEYS and value not in ("", None):
+            try:
+                out[label] = int(value)
+            except ValueError:
+                out[label] = value
         else:
             out[label] = value
     return out
 
 
-def save_as_excel(rows: List[Dict], term: str, output_file: str, verbose: bool = True):
+def save_as_excel(rows: List[Dict], term: str, output_file: str,
+                  labels: Dict[str, str], verbose: bool = True):
     """Save rows to an Excel workbook with a formatted, frozen header."""
     if verbose:
         print(f"{Fore.CYAN}📊 Creating Excel workbook...")
@@ -148,7 +205,7 @@ def save_as_excel(rows: List[Dict], term: str, output_file: str, verbose: bool =
     ws = wb.active
     ws.title = f"Courses {term}"
 
-    headers = list(COLUMN_LABELS.values())
+    headers = list(labels.values())
     header_font = Font(bold=True, color="FFFFFF")
     header_fill = PatternFill("solid", fgColor="4472C4")
 
@@ -177,13 +234,14 @@ def save_as_excel(rows: List[Dict], term: str, output_file: str, verbose: bool =
         print(f"{Fore.GREEN}✓ Saved {Style.BRIGHT}{len(rows)}{Style.NORMAL} rows to {Style.BRIGHT}{output_file}")
 
 
-def save_as_csv(rows: List[Dict], term: str, output_file: str, verbose: bool = True):
+def save_as_csv(rows: List[Dict], term: str, output_file: str,
+                labels: Dict[str, str], verbose: bool = True):
     """Save rows to a CSV file."""
     if verbose:
         print(f"{Fore.CYAN}📄 Creating CSV file...")
 
     with open(output_file, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=list(COLUMN_LABELS.values()))
+        writer = csv.DictWriter(f, fieldnames=list(labels.values()))
         writer.writeheader()
         writer.writerows(rows)
 
@@ -191,13 +249,14 @@ def save_as_csv(rows: List[Dict], term: str, output_file: str, verbose: bool = T
         print(f"{Fore.GREEN}✓ Saved {Style.BRIGHT}{len(rows)}{Style.NORMAL} rows to {Style.BRIGHT}{output_file}")
 
 
-def save_as_json(rows: List[Dict], term: str, output_file: str, verbose: bool = True):
+def save_as_json(rows: List[Dict], term: str, output_file: str,
+                 key: str, verbose: bool = True):
     """Save rows to a JSON file."""
     if verbose:
         print(f"{Fore.CYAN}📝 Creating JSON file...")
 
     with open(output_file, "w") as f:
-        json.dump({"term": term, "total_count": len(rows), "meeting_times": rows}, f, indent=2)
+        json.dump({"term": term, "total_count": len(rows), key: rows}, f, indent=2)
 
     if verbose:
         print(f"{Fore.GREEN}✓ Saved {Style.BRIGHT}{len(rows)}{Style.NORMAL} rows to {Style.BRIGHT}{output_file}")
@@ -225,30 +284,36 @@ def list_terms(base_url: str = DEFAULT_BASE_URL):
 
 def fetch_courses(term: str, output_file: Optional[str] = None,
                   format: str = "excel", verbose: bool = True,
-                  base_url: str = DEFAULT_BASE_URL):
+                  base_url: str = DEFAULT_BASE_URL, by_meeting: bool = False):
     """Fetch a term's schedule from the feed and save it."""
     try:
         if verbose:
             print(f"{Fore.CYAN}🔎 Fetching term {Style.BRIGHT}{term}{Style.NORMAL} from {base_url}...")
 
-        feed_rows = CalendarFeedClient(base_url).get_meeting_times(term)
-        rows = [to_output_row(r) for r in feed_rows]
+        client = CalendarFeedClient(base_url)
+        labels = MEETING_COLUMN_LABELS if by_meeting else SECTION_COLUMN_LABELS
+        feed_rows = client.get_meeting_times(term) if by_meeting else client.get_sections(term)
+        rows = [to_output_row(r, labels) for r in feed_rows]
 
         if verbose:
             sections = len({r["CRN"] for r in rows})
-            print(f"{Fore.GREEN}✓ Got {Style.BRIGHT}{len(rows)}{Style.NORMAL} meeting times "
-                  f"across {Style.BRIGHT}{sections}{Style.NORMAL} sections")
+            if by_meeting:
+                print(f"{Fore.GREEN}✓ Got {Style.BRIGHT}{len(rows)}{Style.NORMAL} meeting times "
+                      f"across {Style.BRIGHT}{sections}{Style.NORMAL} sections")
+            else:
+                print(f"{Fore.GREEN}✓ Got {Style.BRIGHT}{sections}{Style.NORMAL} sections")
 
         if not output_file:
             extensions = {"excel": ".xlsx", "csv": ".csv", "json": ".json"}
             output_file = f"courses_{term}{extensions.get(format, '.xlsx')}"
 
         if format == "excel":
-            save_as_excel(rows, term, output_file, verbose)
+            save_as_excel(rows, term, output_file, labels, verbose)
         elif format == "csv":
-            save_as_csv(rows, term, output_file, verbose)
+            save_as_csv(rows, term, output_file, labels, verbose)
         elif format == "json":
-            save_as_json(rows, term, output_file, verbose)
+            save_as_json(rows, term, output_file,
+                         "meeting_times" if by_meeting else "sections", verbose)
         else:
             raise ValueError(f"Unsupported format: {format}")
 
@@ -275,9 +340,17 @@ Examples:
   # Fetch as JSON with a custom output file
   python leopardweb_courses.py 202710 --format json -o fall2026.json
 
-Note:
-  Each row is one meeting time in one room, so a course that meets three
-  times a week has three rows. Group by CRN to get one row per section.
+  # One row per meeting day instead of one row per section
+  python leopardweb_courses.py 202710 --by-meeting
+
+Row grain:
+  By default one row is one section, the way it appears on a schedule.
+  Meeting days are collapsed into Banner day codes, so a Tuesday and
+  Thursday lecture reads as "TR". R is Thursday and U is Sunday.
+
+  --by-meeting gives one row per meeting day in one room instead. Use it
+  for room and hour questions, such as what is in WENTW 206 on Tuesday at
+  08:00. In that shape a section that meets twice a week has two rows.
         """
     )
 
@@ -286,6 +359,8 @@ Note:
     parser.add_argument("-f", "--format", choices=["excel", "csv", "json"],
                         default="excel", help="Output format (default: excel)")
     parser.add_argument("-o", "--output", help="Output filename (default: courses_{term}.{ext})")
+    parser.add_argument("--by-meeting", action="store_true",
+                        help="One row per meeting day in one room, instead of one per section")
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL,
                         help=f"Calendar server to read from (default: {DEFAULT_BASE_URL})")
     parser.add_argument("-q", "--quiet", action="store_true", help="Suppress progress messages")
@@ -306,7 +381,8 @@ Note:
         sys.exit(1)
 
     fetch_courses(args.term, args.output, args.format,
-                  verbose=not args.quiet, base_url=args.base_url)
+                  verbose=not args.quiet, base_url=args.base_url,
+                  by_meeting=args.by_meeting)
 
 
 if __name__ == "__main__":
